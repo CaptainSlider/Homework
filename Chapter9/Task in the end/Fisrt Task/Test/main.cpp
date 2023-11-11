@@ -4,21 +4,26 @@ int Error(const char* msg) {
     printf("%s Erorr= %d\n", msg, GetLastError());
     return 1;
 }
+
 int wmain(int argc,wchar_t* argv[])
 {
     if (argc < 1) {
-        return 1;
+        printf("Test [PID]\n");
+        return 0;
     }
+
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, _wtoi(argv[1]));
     if (hProcess == NULL)
     {
         return Error("Failed to open Process");
     }
+
     HMODULE Module = LoadLibraryA("user32.dll");
     FARPROC loadLibraryAddress = GetProcAddress(Module, "MessageBoxW");
     if (!loadLibraryAddress) {
         return Error("Failed to ger proc adress");
     }
+
     LPVOID pRemoteParam = VirtualAllocEx(hProcess, NULL, 256, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (pRemoteParam == NULL)
     {

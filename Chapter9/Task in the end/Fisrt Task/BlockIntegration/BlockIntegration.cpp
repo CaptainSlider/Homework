@@ -4,6 +4,7 @@
 
 DRIVER_UNLOAD BlockIntegrationUnload;
 OB_PREOP_CALLBACK_STATUS OnPreOpenProcess(PVOID Context, POB_PRE_OPERATION_INFORMATION OperationInformation);
+
 extern "C"
 NTSTATUS ZwQueryInformationProcess(
 	_In_      HANDLE           ProcessHandle,
@@ -12,10 +13,14 @@ NTSTATUS ZwQueryInformationProcess(
 	_In_      ULONG            ProcessInformationLength,
 	_Out_opt_ PULONG           ReturnLength
 );
+
 extern "C"
 char* PsGetProcessImageFileName(PEPROCESS eprocess);
-NTSTATUS IsDebug(PEPROCESS Process, bool* debug);
-PVOID RegistrationHandle;
+
+NTSTATUS IsDebug(PEPROCESS Process, bool* isDebug);
+
+//Globals
+PVOID g_RegistrationHandle;
 
 extern "C"
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING) {
@@ -39,7 +44,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING) {
 	UNICODE_STRING devName = RTL_CONSTANT_STRING(L"\\Device\\BlockIntegration");
 	UNICODE_STRING symLink = RTL_CONSTANT_STRING(L"\\??\\BlockIntegration");
 	PDEVICE_OBJECT DeviceObject;
-	bool CreateSymlink = false;
+	bool createSymLink = false;
+
 	do
 	{
 		status = IoCreateDevice(DriverObject, 0, &devName, FILE_DEVICE_UNKNOWN, 0, false, &DeviceObject);
@@ -47,34 +53,40 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING) {
 			KdPrint(("failed to create device (status = %08X)", status));
 			break;
 		}
+
 		status = IoCreateSymbolicLink(&symLink, &devName);
 		if (!NT_SUCCESS(status)) {
 			KdPrint(("failed to create symbol link (status = %08X)", status));
 			break;
 		}
-		CreateSymlink = true;
+		createSymLink = true;
 		
-		status = ObRegisterCallbacks(&reg, &RegistrationHandle);
+		status = ObRegisterCallbacks(&reg, &g_RegistrationHandle);
 		if (!NT_SUCCESS(status)) {
 			KdPrint(("failed to register callback (status = %08X)", status));
 			break;
 		}
+
 	} while (false);
 
 	if (!NT_SUCCESS(status)) {
 		if (DeviceObject) {
 			IoDeleteDevice(DeviceObject);
 		}
-		if (CreateSymlink) {
+
+		if (createSymLink) {
 			IoDeleteSymbolicLink(&symLink);
 		}
+
 	}
+
 	DriverObject->DriverUnload = BlockIntegrationUnload;
+
 	return status;
 }
 
 void BlockIntegrationUnload(PDRIVER_OBJECT DriverObject) {
-	ObUnRegisterCallbacks(RegistrationHandle);
+	ObUnRegisterCallbacks(g_RegistrationHandle);
 
 	UNICODE_STRING symLink = RTL_CONSTANT_STRING(L"\\??\\BlockIntegration");
 	IoDeleteSymbolicLink(&symLink);
@@ -101,14 +113,14 @@ OB_PREOP_CALLBACK_STATUS OnPreOpenProcess(PVOID, POB_PRE_OPERATION_INFORMATION O
 	
 
 	if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE && (OperationInformation->Parameters->CreateHandleInformation.DesiredAccess & RemoteMask)) {
-		bool debug = false;
-		auto status = IsDebug(process, &debug);
+		bool isDebug = false;
+		auto status = IsDebug(process, &isDebug);
 		if (!NT_SUCCESS(status)) {
 			KdPrint(("Failed to IsDebug (status=%08X)", status));
 			return OB_PREOP_SUCCESS;
 		}
 
-		if (debug) {
+		if (isDebug) {
 			return OB_PREOP_SUCCESS;
 		}
 
@@ -116,46 +128,45 @@ OB_PREOP_CALLBACK_STATUS OnPreOpenProcess(PVOID, POB_PRE_OPERATION_INFORMATION O
 	}
 	else {
 		if (OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess & RemoteMask) {
-			bool debug = false;
-			auto status = IsDebug(process, &debug);
+			bool isDebug = false;
+			auto status = IsDebug(process, &isDebug);
 			if (!NT_SUCCESS(status)) {
 				KdPrint(("Failed to IsDebug (status=%08X)", status));
 				return OB_PREOP_SUCCESS;
 			}
 
-			if (debug) {
+			if (isDebug) {
 				return OB_PREOP_SUCCESS;
 			}
+
 			OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess &= ~RemoteMask;
-		
 		}
 	}
-	
 
 	return OB_PREOP_SUCCESS;
 }
 
-NTSTATUS IsDebug(PEPROCESS Process,bool* debug) {
+NTSTATUS IsDebug(PEPROCESS Process,bool* isDebug) {
 	HANDLE hProcess;
-	*debug = false;
+	*isDebug = false;
 	auto status = ObOpenObjectByPointer(Process, OBJ_KERNEL_HANDLE, nullptr, READ_CONTROL, nullptr, KernelMode, &hProcess);
 	if (!NT_SUCCESS(status)) {
 		KdPrint(("Failed to open object (status=%08X)", status));
 		return status;
 	}
 
-	PULONG debugPort = nullptr;
+	PULONG pDebugPort = nullptr;
 	ULONG returnLength = 0;
-	status = ZwQueryInformationProcess(hProcess, ProcessDebugPort, &debugPort, sizeof(debugPort), &returnLength);
+	status = ZwQueryInformationProcess(hProcess, ProcessDebugPort, &pDebugPort, sizeof(pDebugPort), &returnLength);
 	if (!NT_SUCCESS(status))
 	{
 		KdPrint(("Failed to check debug (status=%08X)", status));
 		return status;
 	}
 
-
-	if (debugPort) {
-		*debug = true;
+	if (pDebugPort) {
+		*isDebug = true;
 	}
+
 	return STATUS_SUCCESS;
 }
