@@ -1,0 +1,2 @@
+Implement a driver that does not allow threads to be injected into other
+processes, unless the target process is controlled by a debugger.
