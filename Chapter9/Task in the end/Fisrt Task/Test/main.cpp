@@ -1,14 +1,14 @@
 #include "pch.h"
 
 int Error(const char* msg) {
-    printf("%s Erorr= %d\n", msg, GetLastError());
+   std::cout << msg <<"Erorr = " << GetLastError();
     return 1;
 }
 
 int wmain(int argc,wchar_t* argv[])
 {
     if (argc < 1) {
-        printf("Test [PID]\n");
+        std::cout << "Test [PID]\n";
         return 0;
     }
 

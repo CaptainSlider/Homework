@@ -167,6 +167,6 @@ NTSTATUS IsDebug(PEPROCESS Process,bool* isDebug) {
 	if (pDebugPort) {
 		*isDebug = true;
 	}
-
+	ObCloseHandle(hProcess, KernelMode);
 	return STATUS_SUCCESS;
 }
