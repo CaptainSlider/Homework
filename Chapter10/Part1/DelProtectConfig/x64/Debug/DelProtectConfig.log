@@ -1,0 +1,6 @@
+﻿  pch.cpp
+  main.cpp
+C:\Users\Danilka\source\repos\DelProtectConfig\main.cpp(25,139): warning C4267: аргумент: преобразование из "size_t" в "DWORD"; возможна потеря данных
+C:\Users\Danilka\source\repos\DelProtectConfig\main.cpp(28,142): warning C4267: аргумент: преобразование из "size_t" в "DWORD"; возможна потеря данных
+C:\Users\Danilka\source\repos\DelProtectConfig\main.cpp(31,137): warning C4267: аргумент: преобразование из "size_t" в "DWORD"; возможна потеря данных
+  DelProtectConfig.vcxproj -> C:\Users\Danilka\source\repos\DelProtect\x64\Debug\DelProtectConfig.exe

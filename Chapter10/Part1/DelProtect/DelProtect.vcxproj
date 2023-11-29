@@ -35,6 +35,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="FastMutex.cpp" />
     <ResourceCompile Include="DelProtect.rc" />
     <ClCompile Include="DelProtect.cpp" />
     <Inf Include="DelProtect.inf" />
@@ -186,6 +187,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AutoLock.h" />
+    <ClInclude Include="DelProtect.h" />
+    <ClInclude Include="DelProtectCommon.h" />
+    <ClInclude Include="FastMutex.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

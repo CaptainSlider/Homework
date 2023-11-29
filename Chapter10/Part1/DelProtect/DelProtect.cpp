@@ -16,9 +16,16 @@ Environment:
 
 #include <fltKernel.h>
 #include <dontuse.h>
+#include "FastMutex.h"
+#include "DelProtect.h"
+#include "DelProtectCommon.h"
+#include "AutoLock.h"
 
 #pragma prefast(disable:__WARNING_ENCODE_MEMBER_FUNCTION_POINTER, "Not valid for kernel mode drivers")
 
+/*************************************************************************
+    Globals variables
+*************************************************************************/
 
 PFLT_FILTER gFilterHandle;
 ULONG_PTR OperationStatusCtx = 1;
@@ -26,10 +33,9 @@ ULONG_PTR OperationStatusCtx = 1;
 #define PTDBG_TRACE_ROUTINES            0x00000001
 #define PTDBG_TRACE_OPERATION_STATUS    0x00000002
 
-#define DRIVER_TAG 'nmys'
-
 ULONG gTraceFlags = 0;
 
+Globals g_Globals;
 
 #define PT_DBG_PRINT( _dbgLevel, _string )          \
     (FlagOn(gTraceFlags,(_dbgLevel)) ?              \
@@ -40,19 +46,16 @@ ULONG gTraceFlags = 0;
     Prototypes
 *************************************************************************/
 
+bool FindExecutable(PCWSTR ExeName);
 bool IsDeleteAllowed(const PEPROCESS process);
+void AllClear();
+
+DRIVER_DISPATCH DelProtectCreateClose, DelProtectDeviceControl;
+
+DRIVER_UNLOAD DelProtectUnloadDriver;
+
 
 EXTERN_C_START
-
-//NTSTATUS ObOpenObjectByPointer(
-//    _In_ PVOID Object,
-//    _In_ ULONG HandleAttributes,
-//    _In_opt_ PACCESS_STATE PassedAccessState,
-//    _In_ ACCESS_MASK DesiredAccess,
-//    _In_opt_ POBJECT_TYPE ObjectType,
-//    _In_ KPROCESSOR_MODE AccessMode,
-//    _Out_ PHANDLE Handle
-//);
 
 FLT_PREOP_CALLBACK_STATUS DelProtectPreCreate(
     _Inout_   PFLT_CALLBACK_DATA    Data,
@@ -357,58 +360,57 @@ Return Value:
 NTSTATUS
 DriverEntry (
     _In_ PDRIVER_OBJECT DriverObject,
-    _In_ PUNICODE_STRING RegistryPath
+    _In_ PUNICODE_STRING 
     )
-/*++
 
-Routine Description:
-
-    This is the initialization routine for this miniFilter driver.  This
-    registers with FltMgr and initializes all global data structures.
-
-Arguments:
-
-    DriverObject - Pointer to driver object created by the system to
-        represent this driver.
-
-    RegistryPath - Unicode string identifying where the parameters for this
-        driver are located in the registry.
-
-Return Value:
-
-    Routine can return non success error codes.
-
---*/
 {
-    NTSTATUS status;
 
-    UNREFERENCED_PARAMETER( RegistryPath );
+    g_Globals.ExeNameLock.Init();
+    UNICODE_STRING devName = RTL_CONSTANT_STRING(L"\\device\\delprotect");
+    UNICODE_STRING symLink = RTL_CONSTANT_STRING(L"\\??\\delprotect");
+    PDEVICE_OBJECT DeviceObject = nullptr;
+    bool symLinkRegister = false;
+    auto status = STATUS_SUCCESS;
 
-    PT_DBG_PRINT( PTDBG_TRACE_ROUTINES,
-                  ("DelProtect!DriverEntry: Entered\n") );
+    do
+    {
+        status = IoCreateDevice(DriverObject, 0, &devName, FILE_DEVICE_UNKNOWN, 0, FALSE, &DeviceObject);
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
 
-    //
-    //  Register with FltMgr to tell it our callback routines
-    //
-    status = FltRegisterFilter( DriverObject,
-                                &FilterRegistration,
-                                &gFilterHandle );
+        status = IoCreateSymbolicLink(&symLink, &devName);
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
 
-    FLT_ASSERT( NT_SUCCESS( status ) );
+        status = FltRegisterFilter(DriverObject, &FilterRegistration, &gFilterHandle);
+        FLT_ASSERT(NT_SUCCESS(status));
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
 
-    if (NT_SUCCESS( status )) {
+        DriverObject->MajorFunction[IRP_MJ_CREATE] = DriverObject->MajorFunction[IRP_MJ_CLOSE] = DelProtectCreateClose;
+        DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DelProtectDeviceControl;
+        DriverObject->DriverUnload = DelProtectUnloadDriver;
 
-        //
-        //  Start filtering i/o
-        //
+        status = FltStartFiltering(gFilterHandle);
 
-        status = FltStartFiltering( gFilterHandle );
+    } while (false);
 
-        if (!NT_SUCCESS( status )) {
-
-            FltUnregisterFilter( gFilterHandle );
+    if (!NT_SUCCESS(status)) {
+        if (gFilterHandle) {
+            FltUnregisterFilter(gFilterHandle);
+        }
+        if (symLinkRegister) {
+            IoDeleteSymbolicLink(&symLink);
+        }
+        if (DeviceObject) {
+            IoDeleteDevice(DeviceObject);
         }
     }
+
+
 
     return status;
 }
@@ -593,17 +595,19 @@ bool IsDeleteAllowed(const PEPROCESS process) {
         }
     }
 
-    auto size = 300;
+    auto size = 500;
     bool allowDelete = true;
     auto processName = (UNICODE_STRING*)ExAllocatePool2(POOL_FLAG_PAGED, size, DRIVER_TAG);
     if (processName) {
         auto status = ZwQueryInformationProcess(hProcess, ProcessImageFileName, processName, size - sizeof(WCHAR), nullptr);
-        KdPrint(("Delete operation from %wZ\n", processName));
         if (NT_SUCCESS(status)) {
-            if (processName->Length > 0 && wcsstr(processName->Buffer, L"\\System32\\cmd.exe") != nullptr ||
-                wcsstr(processName->Buffer, L"\\SysWOW64\\cmd.exe") != nullptr) {
+            KdPrint(("Delete operation from %wZ\n", processName));
+
+            auto ExeName = wcsrchr(processName->Buffer, L'\\');
+             if (ExeName &&  FindExecutable(ExeName + 1))
+             {
                 allowDelete = false;
-            }
+             }
         }
         ExFreePool(processName);
     }
@@ -611,6 +615,121 @@ bool IsDeleteAllowed(const PEPROCESS process) {
         ZwClose(hProcess);
     }
     return allowDelete;
+}
+
+NTSTATUS DelProtectCreateClose(PDEVICE_OBJECT, PIRP Irp) {
+    Irp->IoStatus.Information = 0;
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    IoCompleteRequest(Irp, 0);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS DelProtectDeviceControl(PDEVICE_OBJECT, PIRP Irp) {
+    auto status = STATUS_SUCCESS;
+    auto stack = IoGetCurrentIrpStackLocation(Irp);
+    switch (stack->Parameters.DeviceIoControl.IoControlCode)
+    {
+    case IOCTL_DELPROTECT_ADD_EXE: {
+        auto name = (WCHAR*)Irp->AssociatedIrp.SystemBuffer;
+        if (!name) {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        if (FindExecutable(name)) {
+            break;
+        }
+
+        AutoLock<FastMutex> lock(g_Globals.ExeNameLock);
+        if (g_Globals.ExeNamesCount == MaxExecutables) {
+            status = STATUS_TOO_MANY_NAMES;
+            break;
+        }
+
+        for (int i = 0; i < MaxExecutables; ++i) {
+            if (g_Globals.ExeNames[i] == nullptr) {
+                auto len = (wcslen(name) + 1) * sizeof(WCHAR);
+                auto buffer = (WCHAR*)ExAllocatePool2(POOL_FLAG_PAGED, len, DRIVER_TAG);
+                if (!buffer) {
+                    status = STATUS_INSUFFICIENT_RESOURCES;
+                    break;
+                }
+                wcscpy_s(buffer, len / sizeof(WCHAR), name);
+                g_Globals.ExeNames[i] = buffer;
+                ++g_Globals.ExeNamesCount;
+                break;
+            }
+        }
+        break;
+    }
+    case IOCTL_DELPROTECT_REMOVE_EXE: {
+        auto name = (WCHAR*)Irp->AssociatedIrp.SystemBuffer;
+        if (!name) {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        
+        AutoLock<FastMutex> lock(g_Globals.ExeNameLock);
+        bool found = false;
+        for (int i = 0; i < g_Globals.ExeNamesCount; ++i) {
+            if (_wcsicmp(g_Globals.ExeNames[i], name) == 0) {
+                ExFreePool(g_Globals.ExeNames[i]);
+                g_Globals.ExeNames[i] = nullptr;
+                --g_Globals.ExeNamesCount;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            status = STATUS_NOT_FOUND;
+            break;
+        }
+
+        break;
+    }
+    case IOCTL_DELPROTECT_CLEAR: {
+        AllClear();
+        break;
+    }      
+    default:
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        break;
+    }
+    Irp->IoStatus.Information = 0;
+    Irp->IoStatus.Status = status;
+    IoCompleteRequest(Irp, 0);
+    return status;
+}
+
+void DelProtectUnloadDriver(PDRIVER_OBJECT DriverObject) {
+    UNICODE_STRING symLink = RTL_CONSTANT_STRING(L"\\??\\delprotect");
+    IoDeleteSymbolicLink(&symLink);
+    IoDeleteDevice(DriverObject->DeviceObject);
+}
+
+bool FindExecutable(PCWSTR ExeName) {
+    AutoLock <FastMutex> lock(g_Globals.ExeNameLock);
+    if (g_Globals.ExeNamesCount == 0) {
+        return false;
+    }
+
+    for (int i = 0; i < MaxExecutables; ++i) {
+        if (g_Globals.ExeNames[i] && _wcsicmp(g_Globals.ExeNames[i], ExeName) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void AllClear() {
+    AutoLock <FastMutex> lock(g_Globals.ExeNameLock);
+    for (int i = 0; i < g_Globals.ExeNamesCount; ++i) {
+        ExFreePool(g_Globals.ExeNames[i]);
+        g_Globals.ExeNames[i] = nullptr;
+    }
+    g_Globals.ExeNamesCount = 0;
+
 }
 
 VOID
